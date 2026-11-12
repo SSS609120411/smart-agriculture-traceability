@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """产品管理：查询（登录）、增删改（管理员/生产者）。"""
-from flask import Blueprint, request
+from flask import Blueprint, g, request
 
 from extensions import db
 from models import Category, Product
@@ -44,6 +44,7 @@ def create_product():
         variety=data.get("variety"),
         description=data.get("description"),
         image_url=data.get("image_url"),
+        created_by=g.user.id,
     )
     db.session.add(p)
     db.session.commit()
@@ -56,6 +57,8 @@ def update_product(pid):
     p = Product.query.get(pid)
     if not p:
         return err("产品不存在")
+    if g.user.role != "admin" and p.created_by != g.user.id:
+        return err("无操作权限，只能修改自己创建的产品", 403)
     data = request.get_json(silent=True) or {}
     if data.get("category_id") and Category.query.get(data["category_id"]):
         p.category_id = data["category_id"]
@@ -72,6 +75,8 @@ def delete_product(pid):
     p = Product.query.get(pid)
     if not p:
         return err("产品不存在")
+    if g.user.role != "admin" and p.created_by != g.user.id:
+        return err("无操作权限，只能删除自己创建的产品", 403)
     db.session.delete(p)
     db.session.commit()
     return ok(message="删除成功")

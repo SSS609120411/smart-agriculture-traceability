@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """各环节溯源记录：种植 / 质检 / 加工 / 物流 / 销售。"""
-from flask import Blueprint, request
+from flask import Blueprint, g, request
 
 from extensions import db
 from models import (Batch, LogisticsRecord, PlantingRecord, ProcessingRecord,
@@ -37,8 +37,11 @@ def list_records(batch_id, stage):
 def add_record(batch_id, stage):
     if stage not in STAGES:
         return err("未知环节")
-    if not Batch.query.get(batch_id):
+    batch = Batch.query.get(batch_id)
+    if not batch:
         return err("批次不存在", 404)
+    if g.user.role != "admin" and batch.producer_id != g.user.id:
+        return err("无操作权限，只能为自己负责的批次添加记录", 403)
     model, fields = STAGES[stage]
     data = request.get_json(silent=True) or {}
     kwargs = {k: data.get(k) for k in fields}
@@ -57,6 +60,11 @@ def delete_record(stage, record_id):
     rec = model.query.get(record_id)
     if not rec:
         return err("记录不存在", 404)
+    batch = Batch.query.get(rec.batch_id)
+    if not batch:
+        return err("批次不存在", 404)
+    if g.user.role != "admin" and batch.producer_id != g.user.id:
+        return err("无操作权限，只能删除自己负责批次的记录", 403)
     db.session.delete(rec)
     db.session.commit()
     return ok(message="删除成功")

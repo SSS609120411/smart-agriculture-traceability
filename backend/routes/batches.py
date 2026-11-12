@@ -76,6 +76,8 @@ def update_batch(bid):
     b = Batch.query.get(bid)
     if not b:
         return err("批次不存在", 404)
+    if g.user.role != "admin" and b.producer_id != g.user.id:
+        return err("无操作权限，只能修改自己创建的批次", 403)
     data = request.get_json(silent=True) or {}
     for field in ("production_date", "quantity", "unit", "status"):
         if data.get(field) is not None:
@@ -92,6 +94,8 @@ def delete_batch(bid):
     b = Batch.query.get(bid)
     if not b:
         return err("批次不存在", 404)
+    if g.user.role != "admin" and b.producer_id != g.user.id:
+        return err("无操作权限，只能删除自己创建的批次", 403)
     db.session.delete(b)
     db.session.commit()
     return ok(message="删除成功")
