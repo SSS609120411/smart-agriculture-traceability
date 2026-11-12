@@ -11,7 +11,8 @@ from utils.response import err
 
 def generate_token(user):
     payload = {
-        "sub": user.id,
+        # PyJWT>=2.10 要求 sub 必须是字符串，这里统一转成 str 以兼容新旧版本
+        "sub": str(user.id),
         "role": user.role,
         "iat": datetime.utcnow(),
         "exp": datetime.utcnow() + timedelta(hours=current_app.config["JWT_EXPIRES_HOURS"]),
@@ -35,7 +36,11 @@ def get_current_user():
     payload = _decode(auth[7:])
     if not payload:
         return None
-    return User.query.get(payload["sub"])
+    try:
+        user_id = int(payload.get("sub"))
+    except (TypeError, ValueError):
+        return None
+    return User.query.get(user_id)
 
 
 def login_required(f):
