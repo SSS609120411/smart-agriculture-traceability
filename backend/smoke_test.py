@@ -7,15 +7,22 @@
 """
 import os
 import sys
+import tempfile
 
-os.environ.setdefault("DATABASE_URL", "sqlite:///test.db")
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# 每次使用全新的临时库，避免旧表结构(缺少 created_by)造成误判
+TEST_DB = os.path.join(tempfile.gettempdir(), "trace_smoke_test.db")
+if os.path.exists(TEST_DB):
+    os.remove(TEST_DB)
+os.environ["DATABASE_URL"] = "sqlite:///" + TEST_DB.replace("\\", "/")
+sys.path.insert(0, BASE_DIR)
 
 from app import create_app
 from extensions import db
 
 app = create_app()
 app.config["TESTING"] = True
+app.config["QR_DIR"] = os.path.join(tempfile.gettempdir(), "trace_qr_test")
 
 PASS = 0
 FAIL = 0
@@ -31,9 +38,31 @@ def check(name, cond, detail=""):
         print(f"  [FAIL] {name} {detail}")
 
 
+def seed_minimal():
+    """最小种子：3 个账号 + 6 个分类（测试库独立，不依赖 seed.py 的既有数据）。"""
+    from models import Category, User
+
+    for username, role, name, pwd in (
+        ("admin", "admin", "系统管理员", "admin123"),
+        ("producer", "producer", "张农户", "producer123"),
+        ("consumer", "consumer", "李消费者", "consumer123"),
+    ):
+        if not User.query.filter_by(username=username).first():
+            u = User(username=username, role=role, name=name)
+            u.set_password(pwd)
+            db.session.add(u)
+
+    for name in ("蔬菜", "水果", "粮食", "畜禽", "水产", "茶叶"):
+        if not Category.query.filter_by(name=name).first():
+            db.session.add(Category(name=name, description=f"{name}类农产品"))
+
+    db.session.commit()
+
+
 def run():
     with app.app_context():
         db.create_all()
+        seed_minimal()
     c = app.test_client()
 
     print("== 登录 ==")
@@ -86,11 +115,65 @@ def run():
 
     print("== 看板统计 ==")
     r = c.get("/api/dashboard/stats", headers=ah)
-    check("看板统计", r.status_code == 200 and r.get_json()["data"]["batch_count"] >= 2, r.get_json())
+    check("看板统计", r.status_code == 200 and r.get_json()["data"]["batch_count"] >= 1, r.get_json())
 
-    print("== 权限 ==")
+    print("== 权限：角色 ==")
     r = c.get("/api/users", headers=ph)
     check("生产者访问用户管理被拒(403)", r.status_code == 403, r.status_code)
+    r = c.get("/api/categories", headers=ph)
+    check("生产者可读分类(200)", r.status_code == 200)
+    r = c.post("/api/categories", headers=ph, json={"name": "生产者越权分类"})
+    check("生产者新增分类被拒(403)", r.status_code == 403, r.status_code)
+
+    print("== 权限：数据归属 ==")
+    r = c.post("/api/users", headers=ah, json={
+        "username": "producer2", "password": "producer123", "role": "producer", "name": "李农户"})
+    check("管理员创建第二个生产者", r.status_code == 200, r.get_json())
+    r = c.post("/api/auth/login", json={"username": "producer2", "password": "producer123"})
+    check("第二个生产者登录", r.status_code == 200, r.get_json())
+    p2h = {"Authorization": f"Bearer {r.get_json()['data']['token']}"}
+
+    # 产品归属：pid 由 producer 创建
+    r = c.delete(f"/api/products/{pid}", headers=p2h)
+    check("生产者2删除他人产品被拒(403)", r.status_code == 403, r.get_json())
+    r = c.put(f"/api/products/{pid}", headers=p2h, json={"name": "改别人的"})
+    check("生产者2修改他人产品被拒(403)", r.status_code == 403, r.get_json())
+    r = c.delete(f"/api/products/{pid}", headers=ph)
+    check("生产者删除自己的产品(200)", r.status_code == 200, r.get_json())
+
+    # 无归属的历史产品：仅管理员可删
+    with app.app_context():
+        from models import Product as _P
+        legacy = _P(category_id=cat_id, name="历史遗留产品")
+        db.session.add(legacy)
+        db.session.commit()
+        legacy_id = legacy.id
+    r = c.delete(f"/api/products/{legacy_id}", headers=ph)
+    check("生产者删除无归属产品被拒(403)", r.status_code == 403, r.get_json())
+    r = c.delete(f"/api/products/{legacy_id}", headers=ah)
+    check("管理员删除无归属产品(200)", r.status_code == 200, r.get_json())
+
+    # 批次归属：bid 属于 producer
+    r = c.delete(f"/api/batches/{bid}", headers=p2h)
+    check("生产者2删除他人批次被拒(403)", r.status_code == 403, r.get_json())
+    r = c.put(f"/api/batches/{bid}", headers=p2h, json={"status": "已上市"})
+    check("生产者2修改他人批次被拒(403)", r.status_code == 403, r.get_json())
+    r = c.put(f"/api/batches/{bid}", headers=ph, json={"status": "已上市"})
+    check("生产者修改自己的批次(200)", r.status_code == 200, r.get_json())
+
+    # 记录归属：只能操作自己批次的记录
+    r = c.post(f"/api/batches/{bid}/records/planting", headers=p2h, json={"record_type": "施肥", "detail": "越权写入"})
+    check("生产者2向他人批次加记录被拒(403)", r.status_code == 403, r.get_json())
+    r = c.get(f"/api/batches/{bid}/records/planting", headers=ph)
+    rid = r.get_json()["data"][0]["id"]
+    r = c.delete(f"/api/batches/records/planting/{rid}", headers=p2h)
+    check("生产者2删除他人批次记录被拒(403)", r.status_code == 403, r.get_json())
+    r = c.delete(f"/api/batches/records/planting/{rid}", headers=ph)
+    check("生产者删除自己的批次记录(200)", r.status_code == 200, r.get_json())
+
+    # 管理员不受归属限制
+    r = c.delete(f"/api/batches/{bid}", headers=ah)
+    check("管理员删除他人批次(200)", r.status_code == 200, r.get_json())
 
     print(f"\n结果：通过 {PASS}，失败 {FAIL}")
     return FAIL == 0

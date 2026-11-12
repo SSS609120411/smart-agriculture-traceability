@@ -56,6 +56,8 @@ class Product(db.Model):
     variety = db.Column(db.String(128))  # 品种
     description = db.Column(db.String(512))
     image_url = db.Column(db.String(256))
+    # 创建人：用于生产者数据归属校验；历史数据为 NULL 时视为平台数据，仅管理员可改删
+    created_by = db.Column(db.Integer, db.ForeignKey("users.id"))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     def to_dict(self):
@@ -67,6 +69,7 @@ class Product(db.Model):
             "variety": self.variety,
             "description": self.description,
             "image_url": self.image_url,
+            "created_by": self.created_by,
         }
 
 

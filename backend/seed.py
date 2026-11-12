@@ -54,6 +54,7 @@ def seed():
             p = Product(
                 category_id=cats["水果"].id, name="有机草莓", origin="江苏省南京市溧水区",
                 variety="红颜", description="绿色有机种植，无公害，全程可溯源",
+                created_by=producer.id,
             )
             db.session.add(p)
             db.session.flush()
